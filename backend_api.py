@@ -617,10 +617,9 @@ class AppState:
             self._refresh_lock.release()
 
     def start(self) -> None:
-        try:
-            self.refresh_once(force=False)
-        except HTTPException:
-            pass
+        # Avoid blocking app startup on vendor I/O. Railway healthchecks can
+        # fail if startup waits for upstream API calls/credentials before the
+        # server begins accepting requests.
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
