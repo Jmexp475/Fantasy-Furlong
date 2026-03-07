@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronUp, Check, Lock } from "lucide-react";
 import { SilkIcon } from "../components/SilkIcon";
 import { ApiNotice } from "../components/ApiNotice";
-import { useAppData } from "../api/client";
+import { useAppData } from "../api/Client";
 import type { Runner } from "../api/types";
 
 function HorseRow({ runner, isPicked, isLocked, onPick }: { runner: Runner; isPicked: boolean; isLocked: boolean; onPick: () => void; }) {

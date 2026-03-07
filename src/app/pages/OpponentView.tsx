@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronLeft, EyeOff } from "lucide-react";
 import { ApiNotice } from "../components/ApiNotice";
 import { SilkIcon } from "../components/SilkIcon";
-import { useAppData } from "../api/client";
+import { useAppData } from "../api/Client";
 import type { Race } from "../api/types";
 
 function offTimeToMinutes(offTime: string): number { const [h,m]=offTime.split(":").map(Number); return h*60+m; }

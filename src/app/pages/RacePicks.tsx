@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ChevronRight, CheckCircle2, AlertCircle } from "lucide-react";
 import { SilkIcon } from "../components/SilkIcon";
 import { ApiNotice } from "../components/ApiNotice";
-import { useAppData } from "../api/client";
+import { useAppData } from "../api/Client";
 
 function dayLabel(day: { course: string; date: string; label?: string }) {
   return day.label && day.label.trim() ? day.label : `${day.course} ${day.date}`.trim();

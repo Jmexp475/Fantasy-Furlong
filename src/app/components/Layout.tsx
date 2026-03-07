@@ -1,6 +1,6 @@
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import { Home, Binoculars, ListOrdered, Trophy, MoreHorizontal, ClipboardList } from "lucide-react";
-import { useAppData } from "../api/client";
+import { useAppData } from "../api/Client";
 import { ffTheme } from "../../theme";
 
 const NAV_ITEMS = [
