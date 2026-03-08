@@ -29,6 +29,20 @@ function useCountdown(targetMinutes: number) {
   return `${String(mins).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`;
 }
 
+function pendingEtaText(day: any, refreshSeconds = 60): string {
+  const nextRaw = day?.next_check_utc;
+  if (nextRaw) {
+    const nextMs = Date.parse(nextRaw);
+    if (!Number.isNaN(nextMs)) {
+      const mins = Math.max(1, Math.round((nextMs - Date.now()) / 60000));
+      const last = day?.last_refresh ? ` Last checked ${new Date(day.last_refresh).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
+      return `Race data not available yet. Next check in about ${mins} minute${mins === 1 ? "" : "s"}.${last}`;
+    }
+  }
+  const mins = Math.max(1, Math.round((refreshSeconds || 60) / 60));
+  return `Race data not available yet. Next check in about ${mins} minute${mins === 1 ? "" : "s"}.`;
+}
+
 export default function Home() {
   const navigate = useNavigate();
   const { meeting, races, picks, leaderboard, currentDayIndex, currentUserId, apiErrors } = useAppData();
@@ -48,7 +62,7 @@ export default function Home() {
     <div className="p-3 flex flex-col gap-3" style={{ background: ffTheme.bg }}>
       <ApiNotice errors={apiErrors} />
       {selectedDayMeta?.status === "pending" && todayRaces.length === 0 && (
-        <p className="text-sm text-gray-600">Racecards not available yet</p>
+        <p className="text-sm text-gray-600">{pendingEtaText(selectedDayMeta, meeting?.refreshIntervalSeconds ?? 60)}</p>
       )}
       {selectedDayMeta?.status === "error" && todayRaces.length === 0 && (
         <p className="text-sm text-red-600">{selectedDayMeta.last_error || "Racecard loading failed"}</p>

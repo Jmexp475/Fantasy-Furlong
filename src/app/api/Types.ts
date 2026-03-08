@@ -55,6 +55,7 @@ export interface RaceDay {
   races?: Array<{ id: string; off_time: string; name: string; status: string }>;
   last_refresh?: string | null;
   last_error?: string | null;
+  next_check_utc?: string | null;
 }
 
 export interface Meeting {
@@ -64,6 +65,7 @@ export interface Meeting {
   days: string[];
   raceDays: RaceDay[];
   snapshotLocked: boolean;
+  refreshIntervalSeconds?: number;
 }
 
 export interface User { id: string; displayName: string; isAdmin: boolean; avatar: string; }

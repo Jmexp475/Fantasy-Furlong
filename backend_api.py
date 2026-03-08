@@ -62,6 +62,7 @@ FF_RESULTS_TTL_SECONDS = safe_int(os.getenv("FF_RESULTS_TTL_SECONDS", "60")) or 
 FF_RACECARDS_TTL_SECONDS_ACTIVE = safe_int(os.getenv("FF_RACECARDS_TTL_SECONDS_ACTIVE", "60")) or 60
 FF_RESULTS_TTL_SECONDS_ACTIVE = safe_int(os.getenv("FF_RESULTS_TTL_SECONDS_ACTIVE", "30")) or 30
 FF_ROUTE_CACHE_SECONDS = safe_int(os.getenv("FF_ROUTE_CACHE_SECONDS", "10")) or 10
+FF_USER_SESSION_MAX_AGE_SECONDS = max(24 * 3600, FF_FESTIVAL_LENGTH_HOURS * 3600)
 
 
 def _utc_now() -> datetime:
@@ -97,8 +98,8 @@ def _resolve_timezone(name: str):
 def _default_racedays_payload() -> dict[str, Any]:
     return {
         "raceDays": [
-            {"course": "", "date": ""},
-            {"course": "", "date": ""},
+            {"course": "Warwick", "date": "2026-03-08"},
+            {"course": "Wolverhampton", "date": "2026-03-09"},
             {"course": "", "date": ""},
             {"course": "", "date": ""},
             {"course": "", "date": ""},
@@ -143,6 +144,42 @@ def _meeting_days_from_racedays(race_days: list[dict[str, Any]]) -> list[str]:
         else:
             out.append(f"{row.get('course', '')} ({row.get('date', '')})")
     return out
+
+
+def _annotate_next_check(day_row: dict[str, Any], refresh_seconds: int) -> dict[str, Any]:
+    row = dict(day_row)
+    next_check = row.get("next_check_utc")
+    if not next_check:
+        base = row.get("last_refresh")
+        try:
+            if base:
+                next_dt = datetime.fromisoformat(str(base)) + timedelta(seconds=refresh_seconds)
+            else:
+                next_dt = _utc_now() + timedelta(seconds=refresh_seconds)
+            row["next_check_utc"] = next_dt.isoformat()
+        except Exception:
+            row["next_check_utc"] = (_utc_now() + timedelta(seconds=refresh_seconds)).isoformat()
+    return row
+
+
+def _format_weight_st_lbs(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    if "-" in raw and "st" not in raw.lower() and "lbs" not in raw.lower():
+        left, right = [x.strip() for x in raw.split("-", 1)]
+        st = safe_int(left)
+        lbs = safe_int(right)
+        if st is not None and lbs is not None and 0 <= lbs < 14:
+            return f"{st}st {lbs}lbs"
+    as_lbs = safe_int(raw)
+    if as_lbs is None:
+        return ""
+    stones = as_lbs // 14
+    pounds = as_lbs % 14
+    return f"{stones}st {pounds}lbs"
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -373,13 +410,10 @@ class AppState:
 
     def users(self) -> list[dict[str, Any]]:
         users = _read_json(self.users_path, [])
-        if users:
+        if isinstance(users, list):
             return users
-        seeded = [{"id": "u_you", "displayName": "You", "isAdmin": True, "avatar": "Y"}] + [
-            {"id": f"u_p{i}", "displayName": f"Player {i}", "isAdmin": False, "avatar": "P"} for i in range(1, 15)
-        ]
-        _write_json(self.users_path, seeded)
-        return seeded
+        _write_json(self.users_path, [])
+        return []
 
     def picks(self) -> list[dict[str, Any]]:
         return _read_json(self.picks_path, [])
@@ -514,6 +548,7 @@ class AppState:
                     "races": [],
                     "last_refresh": None,
                     "last_error": None,
+                    "next_check_utc": None,
                 }
                 try:
                     req_day = date.fromisoformat(local_day)
@@ -547,6 +582,7 @@ class AppState:
                         all_results.extend(day_results)
                         state["status"] = "loaded"
                         state["last_refresh"] = now_iso
+                        state["next_check_utc"] = (_utc_now() + timedelta(seconds=self.refresh_seconds)).isoformat()
                         state["races"] = [
                             {
                                 "id": str(r.get("race_id", "")),
@@ -559,10 +595,14 @@ class AppState:
                     except Exception as exc:
                         state["status"] = "error"
                         state["last_error"] = str(exc)
+                        state["next_check_utc"] = (_utc_now() + timedelta(seconds=self.refresh_seconds)).isoformat()
                         errors.append(f"slot {slot}: {exc}")
                 day_states.append(state)
 
-            self.race_day_states = sorted(day_states, key=lambda d: safe_int(d.get("slot", 9999)) or 9999)
+            self.race_day_states = [
+                _annotate_next_check(d, self.refresh_seconds)
+                for d in sorted(day_states, key=lambda d: safe_int(d.get("slot", 9999)) or 9999)
+            ]
 
             combined = {"meeting": {"races": []}}
             if sessions:
@@ -652,9 +692,11 @@ class AppState:
                 "races": [],
                 "last_refresh": None,
                 "last_error": None,
+                "next_check_utc": (_utc_now() + timedelta(seconds=self.refresh_seconds)).isoformat(),
             }
             for i, d in enumerate(self.configured_race_days)
         ]
+        configured_days = [_annotate_next_check(d, self.refresh_seconds) for d in configured_days]
         out_meeting = {
             "id": meeting.get("meeting_id", "meeting"),
             "course": meeting.get("course", self.target_course),
@@ -662,6 +704,7 @@ class AppState:
             "days": _meeting_days_from_racedays(configured_days),
             "raceDays": configured_days,
             "snapshotLocked": False,
+            "refreshIntervalSeconds": self.refresh_seconds,
         }
         out_races: list[dict[str, Any]] = []
         persisted_locks = self.race_lock_flags()
@@ -670,6 +713,17 @@ class AppState:
         admin_state = self._load_admin_state()
         manual_results = admin_state.get("manual_results", {})
         for idx, race in enumerate(races, start=1):
+            day_slot = safe_int(race.get("_ff_slot"))
+            expected_day = None
+            if day_slot is not None:
+                expected_day = next((d for d in configured_days if (safe_int(d.get("slot")) or -1) == day_slot), None)
+            race_course = str(race.get("_ff_course", "")).strip().lower()
+            race_date = str(race.get("_ff_date", "")).strip()
+            if expected_day:
+                exp_course = str(expected_day.get("course", "")).strip().lower()
+                exp_date = str(expected_day.get("date", "")).strip()
+                if race_course != exp_course or race_date != exp_date:
+                    continue
             recompute_fair_odds_for_race(race, self.config)
             result = race.get("results") or {}
             override = manual_results.get(str(race.get("race_id")))
@@ -692,8 +746,7 @@ class AppState:
                 age = rn.get("age")
                 sex = str(rn.get("sex_code", "")).strip()
                 details = " ".join([x for x in [f"{age}yo" if age not in (None, "") else "", sex] if x]).strip()
-                weight_raw = rn.get("lbs")
-                weight_text = f"{weight_raw} lbs" if weight_raw not in (None, "") else ""
+                weight_text = _format_weight_st_lbs(rn.get("weight") or rn.get("lbs"))
                 sire = str(rn.get("sire", "")).strip()
                 dam = str(rn.get("dam", "")).strip()
                 breeding = " - ".join([x for x in [sire, dam] if x])
@@ -760,7 +813,20 @@ class AppState:
         picks = self.picks()
         temp = deepcopy(session)
         temp["meeting"]["players"] = [{"player_id": u["id"], "name": u["displayName"]} for u in users]
-        temp["picks"] = [{"pick_id": f"pick_{p['userId']}_{p['raceId']}", "meeting_id": temp["meeting"]["meeting_id"], "race_id": p["raceId"], "runner_id": p["runnerId"], "player_id": p["userId"], "locked": False} for p in picks]
+        allowed_players = {u["id"] for u in users}
+        allowed_races = {str(r.get("race_id")) for r in temp.get("meeting", {}).get("races", [])}
+        temp["picks"] = [
+            {
+                "pick_id": f"pick_{p['userId']}_{p['raceId']}",
+                "meeting_id": temp["meeting"]["meeting_id"],
+                "race_id": p["raceId"],
+                "runner_id": p["runnerId"],
+                "player_id": p["userId"],
+                "locked": False,
+            }
+            for p in picks
+            if p.get("userId") in allowed_players and str(p.get("raceId")) in allowed_races
+        ]
         rescore_session(temp, self.config)
         by_user = {row["player_id"]: row for row in temp.get("leaderboard", [])}
         ordered = sorted(users, key=lambda u: -(by_user.get(u["id"], {}).get("points", 0)))
@@ -807,6 +873,16 @@ def require_admin(request: Request) -> dict[str, Any]:
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid admin session")
     return payload
+
+
+def require_user(request: Request) -> dict[str, Any]:
+    user_id = request.cookies.get(USER_COOKIE)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = STATE.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    return user
 
 
 @app.on_event("startup")
@@ -1055,7 +1131,7 @@ def admin_invites_create(payload: InviteCreateIn, _: dict[str, Any] = Depends(re
     new = []
     for _i in range(payload.count):
         token = secrets.token_urlsafe(16)
-        row = {"token": token, "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=payload.expires_hours)).isoformat(), "used_at": None}
+        row = {"token": token, "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=payload.expires_hours)).isoformat(), "used_at": None, "redeemed_user_id": None, "revoked_at": None}
         invites.append(row)
         new.append(row)
     _atomic_write_json(INVITES_PATH, invites)
@@ -1073,7 +1149,9 @@ def admin_invites_revoke(payload: InviteRevokeIn, _: dict[str, Any] = Depends(re
     invites = _read_json(INVITES_PATH, [])
     for row in invites:
         if row.get("token") == payload.token:
-            row["used_at"] = row.get("used_at") or _utc_now().isoformat()
+            now_iso = _utc_now().isoformat()
+            row["revoked_at"] = now_iso
+            row["used_at"] = row.get("used_at") or now_iso
             _atomic_write_json(INVITES_PATH, invites)
             _audit("admin_invites_revoke", {"token": payload.token})
             return {"ok": True}
@@ -1087,26 +1165,44 @@ def join(payload: JoinIn, response: Response) -> dict[str, Any]:
     target = next((x for x in invites if x.get("token") == payload.token), None)
     if not target:
         raise HTTPException(status_code=404, detail="Invalid token")
-    if target.get("used_at"):
-        raise HTTPException(status_code=409, detail="Token already used")
-    if datetime.fromisoformat(target.get("expires_at")) < now:
-        raise HTTPException(status_code=409, detail="Token expired")
-    user = STATE.add_user(UserIn(display_name=payload.display_name))
-    target["used_at"] = now.isoformat()
-    _atomic_write_json(INVITES_PATH, invites)
-    response.set_cookie(USER_COOKIE, user["id"], httponly=True, samesite="lax", path="/")
+    if target.get("revoked_at"):
+        raise HTTPException(status_code=409, detail="Token revoked")
+
+    redeemed_user_id = str(target.get("redeemed_user_id") or "").strip() or None
+    if redeemed_user_id:
+        user = STATE.get_user_by_id(redeemed_user_id)
+        if not user:
+            raise HTTPException(status_code=409, detail="Token points to a missing user. Ask admin for a fresh invite.")
+    else:
+        expires_at = target.get("expires_at")
+        try:
+            if datetime.fromisoformat(str(expires_at)) < now:
+                raise HTTPException(status_code=409, detail="Token expired")
+        except ValueError:
+            raise HTTPException(status_code=409, detail="Token metadata invalid")
+
+        # First redemption creates (or finds) the player account once and binds
+        # this invite to that player for later re-entry key behavior.
+        user = STATE.add_user(UserIn(display_name=payload.display_name))
+        target["redeemed_user_id"] = user["id"]
+        target["used_at"] = target.get("used_at") or now.isoformat()
+        _atomic_write_json(INVITES_PATH, invites)
+
+    response.set_cookie(
+        USER_COOKIE,
+        user["id"],
+        httponly=True,
+        samesite="lax",
+        max_age=FF_USER_SESSION_MAX_AGE_SECONDS,
+        path="/",
+        secure=(os.getenv("FF_COOKIE_SECURE", "0") == "1"),
+    )
     _audit("join", {"token": payload.token, "user_id": user["id"]})
-    return {"ok": True, "user_id": user["id"], "display_name": user["displayName"]}
+    return {"ok": True, "user_id": user["id"], "display_name": user["displayName"], "reentry": bool(redeemed_user_id)}
 
 
 @app.get("/api/me")
-def get_me(request: Request) -> dict[str, Any]:
-    user_id = request.cookies.get(USER_COOKIE)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    user = STATE.get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unknown user")
+def get_me(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
     return user
 
 
@@ -1125,9 +1221,11 @@ def get_meeting() -> dict[str, Any]:
                 "races": [],
                 "last_refresh": snap.get("last_refresh"),
                 "last_error": snap.get("last_error"),
+                "next_check_utc": (_utc_now() + timedelta(seconds=STATE.refresh_seconds)).isoformat(),
             }
             for i, d in enumerate(STATE.configured_race_days)
         ]
+        configured_days = [_annotate_next_check(d, STATE.refresh_seconds) for d in configured_days]
         return {
             "id": "meeting",
             "course": STATE.target_course,
@@ -1135,9 +1233,12 @@ def get_meeting() -> dict[str, Any]:
             "days": _meeting_days_from_racedays(configured_days),
             "raceDays": configured_days,
             "snapshotLocked": False,
+            "refreshIntervalSeconds": self.refresh_seconds,
         }
     meeting.setdefault("raceDays", STATE.race_day_states or STATE.configured_race_days)
+    meeting["raceDays"] = [_annotate_next_check(d, STATE.refresh_seconds) for d in meeting.get("raceDays", [])]
     meeting.setdefault("days", _meeting_days_from_racedays(meeting.get("raceDays", [])))
+    meeting.setdefault("refreshIntervalSeconds", STATE.refresh_seconds)
     return meeting
 
 
@@ -1145,7 +1246,7 @@ def get_meeting() -> dict[str, Any]:
 
 @app.get("/api/configured-racedays")
 def get_configured_racedays() -> list[dict[str, Any]]:
-    return STATE.race_day_states or [
+    rows = STATE.race_day_states or [
         {
             "slot": safe_int(d.get("slot", i + 1)) or (i + 1),
             "course": d.get("course", ""),
@@ -1155,9 +1256,11 @@ def get_configured_racedays() -> list[dict[str, Any]]:
             "races": [],
             "last_refresh": None,
             "last_error": None,
+            "next_check_utc": (_utc_now() + timedelta(seconds=STATE.refresh_seconds)).isoformat(),
         }
         for i, d in enumerate(STATE.configured_race_days)
     ]
+    return [_annotate_next_check(d, STATE.refresh_seconds) for d in rows]
 
 @app.get("/api/races")
 def get_races() -> list[dict[str, Any]]:
@@ -1191,7 +1294,9 @@ def get_picks() -> list[dict[str, Any]]:
 
 
 @app.post("/api/picks")
-def post_picks(payload: PickIn) -> dict[str, Any]:
+def post_picks(payload: PickIn, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    if str(payload.user_id) != str(user.get("id")):
+        raise HTTPException(status_code=403, detail="Cannot submit picks for another user")
     STATE.set_pick(payload)
     STATE._route_cache_invalidate()
     return {"ok": True}

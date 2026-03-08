@@ -52,7 +52,8 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       ]);
       if (!mounted) return;
 
-      const apiErrors = [meeting.error, races.error, picks.error, usersResp.error, leaderboard.error]
+      const picksError = picks.status === 401 ? null : picks.error;
+      const apiErrors = [meeting.error, races.error, picksError, usersResp.error, leaderboard.error]
         .filter(Boolean) as string[];
       const m = meeting.data;
       const raceDays = m?.raceDays ?? [];
@@ -71,7 +72,7 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       setState({
         meeting: m,
         races: races.data ?? [],
-        picks: picks.data ?? [],
+        picks: picks.status === 401 ? [] : (picks.data ?? []),
         users,
         leaderboard: leaderboard.data ?? [],
         currentUserId,

@@ -9,6 +9,20 @@ function dayLabel(day: { course: string; date: string; label?: string }) {
   return day.label && day.label.trim() ? day.label : `${day.course} ${day.date}`.trim();
 }
 
+function pendingEtaText(day: any, refreshSeconds = 60): string {
+  const nextRaw = day?.next_check_utc;
+  if (nextRaw) {
+    const nextMs = Date.parse(nextRaw);
+    if (!Number.isNaN(nextMs)) {
+      const mins = Math.max(1, Math.round((nextMs - Date.now()) / 60000));
+      const last = day?.last_refresh ? ` Last checked ${new Date(day.last_refresh).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
+      return `Race data not available yet. Next check in about ${mins} minute${mins === 1 ? "" : "s"}.${last}`;
+    }
+  }
+  const mins = Math.max(1, Math.round((refreshSeconds || 60) / 60));
+  return `Race data not available yet. Next check in about ${mins} minute${mins === 1 ? "" : "s"}.`;
+}
+
 export default function RacePicks() {
   const { meeting, currentDayIndex, currentUserId, races, picks, apiErrors } = useAppData();
   const raceDays = meeting?.raceDays ?? [];
@@ -28,7 +42,7 @@ export default function RacePicks() {
     </div>
     <div className="p-3 flex flex-col gap-2">
       {selectedDayMeta?.status === "pending" && dayRaces.length === 0 && (
-        <p className="text-sm text-gray-600">Racecards not available yet</p>
+        <p className="text-sm text-gray-600">{pendingEtaText(selectedDayMeta, meeting?.refreshIntervalSeconds ?? 60)}</p>
       )}
       {selectedDayMeta?.status === "error" && dayRaces.length === 0 && (
         <p className="text-sm text-red-600">{selectedDayMeta.last_error || "Racecard loading failed"}</p>

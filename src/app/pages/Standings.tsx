@@ -8,6 +8,20 @@ function dayLabel(day: { course: string; date: string; label?: string }) {
   return day.label && day.label.trim() ? day.label : `${day.course} (${day.date})`;
 }
 
+function pendingEtaText(day: any, refreshSeconds = 60): string {
+  const nextRaw = day?.next_check_utc;
+  if (nextRaw) {
+    const nextMs = Date.parse(nextRaw);
+    if (!Number.isNaN(nextMs)) {
+      const mins = Math.max(1, Math.round((nextMs - Date.now()) / 60000));
+      const last = day?.last_refresh ? ` Last checked ${new Date(day.last_refresh).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.` : "";
+      return `Race data not available yet. Next check in about ${mins} minute${mins === 1 ? "" : "s"}.${last}`;
+    }
+  }
+  const mins = Math.max(1, Math.round((refreshSeconds || 60) / 60));
+  return `Race data not available yet. Next check in about ${mins} minute${mins === 1 ? "" : "s"}.`;
+}
+
 export default function Standings() {
   const { meeting, currentDayIndex, currentUserId, leaderboard, apiErrors } = useAppData();
   const raceDays = meeting?.raceDays ?? [];
@@ -26,7 +40,7 @@ export default function Standings() {
 
   return <div className="flex flex-col min-h-full"><ApiNotice errors={apiErrors} />
     <div className="flex overflow-x-auto bg-white border-b sticky top-0 z-10">{tabs.map((t,i)=><button key={i} onClick={()=>setSelectedTab(i)} className={`px-4 py-2 text-xs ${selectedTab===i?"bg-green-50 border-b-2 border-yellow-400":""}`}>{t}</button>)}</div>
-    {!isOverall && selectedDayMeta?.status === "pending" ? <div className="p-3 text-sm text-gray-600">Racecards not available yet</div> : null}
+    {!isOverall && selectedDayMeta?.status === "pending" ? <div className="p-3 text-sm text-gray-600">{pendingEtaText(selectedDayMeta, meeting?.refreshIntervalSeconds ?? 60)}</div> : null}
     {!isOverall && selectedDayMeta?.status === "error" ? <div className="p-3 text-sm text-red-600">{selectedDayMeta.last_error || "Racecard loading failed"}</div> : null}
     <div className="p-3"><div className="bg-white rounded-lg overflow-hidden shadow-sm">{sorted.map((e,i)=>{ const pts = isOverall?e.totalPoints:(e.dayPoints[selectedTab]??0); const isMe=e.userId===currentUserId; return <button key={e.userId} onClick={()=>navigate(`/opponent?user=${e.userId}`)} className={`w-full flex items-center gap-3 px-3 py-3 border-b last:border-0 ${isMe?"bg-green-50":""}`}><span className="w-6 text-center text-xs font-bold">{i+1}</span><span className="flex-1 text-left text-sm font-semibold">{e.displayName}{isMe?" (You)":""}</span><span className="text-sm font-bold text-green-700">{pts}pts</span><ChevronRight size={14} className="text-gray-400"/></button>;})}</div></div>
   </div>;
